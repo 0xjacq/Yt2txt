@@ -1,2 +1,6 @@
 output/
 .idea
+build/
+dist/
+yt2txt.spec
+venv/
