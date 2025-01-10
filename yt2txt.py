@@ -40,17 +40,25 @@ def is_cuda_available() -> bool:
         logger.warning("CUDA is not available. Falling back to CPU.")
         return False
 
+
 def sanitize_filename(filename: str) -> str:
     """
-    Sanitize filename by removing or replacing characters that are not allowed in filenames.
+    Sanitize filename by removing or replacing characters that are not allowed in filenames,
+    including spaces.
 
     :param filename: Original filename
     :return: Sanitized filename
     """
-    # Replace invalid characters with underscores
-    sanitized = re.sub(r'[<>:"/\\|?*\x00-\x1F]', '_', filename)
-    return sanitized
+    # Replace invalid characters and spaces with underscores
+    sanitized = re.sub(r'[<>:"/\\|?*\x00-\x1F：\s]', '_', filename)
 
+    # Remove any potential leading or trailing underscores
+    sanitized = sanitized.strip('_')
+
+    # Collapse multiple consecutive underscores into a single one
+    sanitized = re.sub(r'_{2,}', '_', sanitized)
+
+    return sanitized
 def download_audio(input_url: str, output_dir: Path, sleep_interval: int) -> List[Path]:
     """
     Download audio from a YouTube video or playlist and convert it to WAV format.
@@ -63,7 +71,7 @@ def download_audio(input_url: str, output_dir: Path, sleep_interval: int) -> Lis
     output_dir.mkdir(parents=True, exist_ok=True)
     ydl_opts = {
         'format': 'bestaudio/best',
-        'outtmpl': str(output_dir / '%(title)s_%(id)s.%(ext)s'),  # Unique filenames with video ID
+        'outtmpl': str(output_dir / 'TEMP'),  # Unique filenames with video ID
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'wav',
@@ -88,7 +96,7 @@ def download_audio(input_url: str, output_dir: Path, sleep_interval: int) -> Lis
             for entry in info_dict['entries']:
                 if entry is None:
                     continue  # Skip entries that couldn't be processed
-                temp_file_name = f"{entry['title']}_{entry['id']}.wav"
+                temp_file_name = "TEMP.wav"
                 temp_file_path = output_dir / temp_file_name
                 sanitized_file_name = sanitize_filename(temp_file_name)
                 sanitized_file_path = output_dir / sanitized_file_name
@@ -105,7 +113,7 @@ def download_audio(input_url: str, output_dir: Path, sleep_interval: int) -> Lis
                     failed_urls.append(entry['webpage_url'])
         else:
             # Single video case
-            temp_file_name = f"{info_dict['title']}_{info_dict['id']}.wav"
+            temp_file_name = "TEMP.wav"
             temp_file_path = output_dir / temp_file_name
             sanitized_file_name = sanitize_filename(temp_file_name)
             sanitized_file_path = output_dir / sanitized_file_name
