@@ -32,9 +32,12 @@ source .venv/bin/activate
 
 Install the required libraries for your project:
 
+## 📥 Installation
 ```bash
 pip install -r requirements.txt
 ```
+
+And install ffprobe + ffmpeg
 
 ### 4. Install PyTorch
 
@@ -74,6 +77,14 @@ python -c "import torch; print(torch.cuda.is_available()); print(torch.backends.
 
 ## Usage
 
+## 🚀 Usage
+```python
+from yt2txt import YoutubeTranscript
+
+# Example of extraction
+transcript = YoutubeTranscript('https://youtu.be/VIDEO_ID').get_transcript()
+```
+
 Run the project with the following command:
 
 ```bash
@@ -83,6 +94,15 @@ python your_script.py --url "https://youtube.com/..." -o output -m large-v3
 - `--url`: The URL of the YouTube video or playlist.
 - `-o`: The output directory for the transcribed files.
 - `-m`: Whisper model size to use (e.g., `large-v3`).
+
+---
+
+## Features
+
+## 🌟 Features
+- Subtitle extraction
+- Export in TXT/JSON format
+- Automatic language detection
 
 ---
 
@@ -107,4 +127,3 @@ If you'd like to contribute, ensure you test the project on multiple platforms a
 ## Authors
 
 Project developed by [Your Name/Team].
-

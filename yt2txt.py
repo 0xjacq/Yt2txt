@@ -1,223 +1,257 @@
 import logging
 import argparse
+import subprocess
 from pathlib import Path
-from typing import List
+from typing import List, Optional, Tuple
 import yt_dlp
-from faster_whisper import WhisperModel
-from torch.cuda import is_available as cuda_is_available
-from torch.cuda import get_device_name as cuda_get_device_name
 import re
 import os
+import shutil
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Path configuration
+PROJECT_ROOT = Path(os.path.dirname(os.path.abspath(__file__)))
+WHISPER_CPP_DIR = PROJECT_ROOT / "whisper.cpp"
+WHISPER_CLI_PATH = WHISPER_CPP_DIR / "build/bin/whisper-cli"
+MODELS_DIR = WHISPER_CPP_DIR / "models"
+
+# Logging configuration
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
 def download_progress_hook(d: dict) -> None:
-    """
-    Progress hook to log download progress in yt-dlp.
-
-    :param d: Dictionary containing download status information
-    """
+    """Hook to display download progress."""
     if d['status'] == 'downloading':
-        percent = d['_percent_str']
-        speed = d['_speed_str']
-        eta = d['_eta_str']
-        logger.info(f"Downloading: {percent} complete (Speed: {speed}, ETA: {eta})")
-    elif d['status'] == 'finished':
-        logger.info("Download completed. Starting audio extraction...")
-
-def is_cuda_available() -> bool:
-    """
-    Check if CUDA is available and log the GPU information if available.
-
-    :return: True if CUDA is available, False otherwise
-    """
-    if cuda_is_available():
-        logger.info(f"CUDA is available. GPU: {cuda_get_device_name(0)}")
-        return True
-    else:
-        logger.warning("CUDA is not available. Falling back to CPU.")
-        return False
-
+        logger.info(f"Downloading: {d.get('_percent_str', 'N/A')}")
 
 def sanitize_filename(filename: str) -> str:
-    """
-    Sanitize filename by removing or replacing characters that are not allowed in filenames,
-    including spaces.
-
-    :param filename: Original filename
-    :return: Sanitized filename
-    """
-    # Replace invalid characters and spaces with underscores
+    """Cleans a filename to make it safe for the file system."""
     sanitized = re.sub(r'[<>:"/\\|?*\x00-\x1F：\s]', '_', filename)
+    return re.sub(r'_{2,}', '_', sanitized).strip('_')
 
-    # Remove any potential leading or trailing underscores
-    sanitized = sanitized.strip('_')
-
-    # Collapse multiple consecutive underscores into a single one
-    sanitized = re.sub(r'_{2,}', '_', sanitized)
-
-    return sanitized
-def download_audio(input_url: str, output_dir: Path, sleep_interval: int) -> List[Path]:
+def download_audio(input_url: str, output_dir: Path) -> Tuple[List[Path], List[str]]:
     """
-    Download audio from a YouTube video or playlist and convert it to WAV format.
-
-    :param input_url: The URL of the YouTube video or playlist
-    :param output_dir: Directory where the audio files will be saved
-    :param sleep_interval: Time interval (in seconds) to sleep between each download
-    :return: List of paths to the downloaded audio files
+    Downloads audio from a YouTube URL.
+    
+    Args:
+        input_url: YouTube URL
+        output_dir: Output directory
+        
+    Returns:
+        Tuple containing the list of downloaded audio files and the list of failed URLs
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     ydl_opts = {
         'format': 'bestaudio/best',
-        'outtmpl': str(output_dir / 'TEMP'),  # Unique filenames with video ID
+        'outtmpl': str(output_dir / 'TEMP'),
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'wav',
             'preferredquality': '192',
         }],
         'progress_hooks': [download_progress_hook],
-        'sleep_interval': sleep_interval,  # Add sleep interval between downloads
-        'ignoreerrors': True,  # Ignore errors and continue downloading other videos
+        'ignoreerrors': True,
     }
 
-    # Initialize yt-dlp with options
+    audio_files = []
+    failed_urls = []
+
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        # Get metadata without downloading
         info_dict = ydl.extract_info(input_url, download=False)
+        entries = info_dict.get('entries', [info_dict]) if info_dict else []
 
-        audio_files = []  # List to store paths to downloaded audio files
-        failed_urls = []  # List to store URLs of videos that couldn't be downloaded
-
-        # Check if we are dealing with a playlist or a single video
-        if 'entries' in info_dict:
-            # Playlist case
-            for entry in info_dict['entries']:
-                if entry is None:
-                    continue  # Skip entries that couldn't be processed
-                temp_file_name = "TEMP.wav"
-                temp_file_path = output_dir / temp_file_name
-                sanitized_file_name = sanitize_filename(temp_file_name)
-                sanitized_file_path = output_dir / sanitized_file_name
-                try:
-                    ydl.download([entry['webpage_url']])  # Download the video
-                    if temp_file_path.exists():
-                        os.rename(temp_file_path, sanitized_file_path)
-                        audio_files.append(sanitized_file_path)
-                    else:
-                        logger.error(f"File not found after download: {temp_file_path}")
-                        failed_urls.append(entry['webpage_url'])
-                except Exception as e:
-                    logger.warning(f"Failed to download {entry['webpage_url']}: {e}")
-                    failed_urls.append(entry['webpage_url'])
-        else:
-            # Single video case
-            temp_file_name = "TEMP.wav"
-            temp_file_path = output_dir / temp_file_name
-            sanitized_file_name = sanitize_filename(temp_file_name)
-            sanitized_file_path = output_dir / sanitized_file_name
+        for entry in entries:
+            if not entry:
+                continue
+            
             try:
-                ydl.download([input_url])  # Download the video
-                if temp_file_path.exists():
-                    os.rename(temp_file_path, sanitized_file_path)
-                    audio_files.append(sanitized_file_path)
+                temp_path = output_dir / "TEMP.wav"
+                ydl.download([entry['webpage_url']])
+                
+                if temp_path.exists():
+                    sanitized_name = sanitize_filename(f"{entry['title']}.wav")
+                    audio_path = output_dir / sanitized_name
+                    os.rename(temp_path, audio_path)
+                    audio_files.append(audio_path)
+                    logger.info(f"Audio downloaded: {audio_path}")
                 else:
-                    logger.error(f"File not found after download: {temp_file_path}")
-                    failed_urls.append(input_url)
+                    failed_urls.append(entry['webpage_url'])
             except Exception as e:
-                logger.warning(f"Failed to download {input_url}: {e}")
-                failed_urls.append(input_url)
+                logger.error(f"Download failed: {e}")
+                failed_urls.append(entry.get('webpage_url', 'unknown'))
 
-        return audio_files, failed_urls
+    return audio_files, failed_urls
 
-def transcribe_audio(audio_file_path: Path, output_dir: Path, model_size: str) -> Path:
+def check_whisper_cli() -> bool:
+    """Checks if whisper-cli exists and is executable."""
+    if not WHISPER_CLI_PATH.exists():
+        logger.error(f"whisper-cli not found at {WHISPER_CLI_PATH}")
+        logger.error("Please compile whisper.cpp first")
+        return False
+    return True
+
+def check_model(model_name: str) -> Path:
     """
-    Transcribe audio to text using the Whisper model.
-
-    :param audio_file_path: Path to the audio file to transcribe
-    :param output_dir: Directory where the transcription will be saved
-    :param model_size: Whisper model size to use for transcription
-    :return: Path to the transcription file
+    Checks if the model exists, otherwise downloads it.
+    
+    Args:
+        model_name: Model name (e.g., large-v3-turbo)
+        
+    Returns:
+        Path to the model
     """
-    logger.info("Starting transcription...")
+    model_path = MODELS_DIR / f"ggml-{model_name}.bin"
+    
+    if not model_path.exists():
+        logger.info(f"Model {model_name} not found. Downloading...")
+        
+        if not MODELS_DIR.exists():
+            MODELS_DIR.mkdir(parents=True, exist_ok=True)
+            
+        download_script = WHISPER_CPP_DIR / "models/download-ggml-model.sh"
+        
+        if not download_script.exists():
+            logger.error(f"Download script not found at {download_script}")
+            raise FileNotFoundError(f"Download script not found")
+        
+        try:
+            subprocess.run([str(download_script), model_name], 
+                          cwd=WHISPER_CPP_DIR, 
+                          check=True)
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Model download failed: {e}")
+            raise
+    
+    return model_path
 
-    # Choose the appropriate device (GPU or CPU)
-    device = "cuda" if is_cuda_available() else "cpu"
-    logger.info(f"Using device: {device}")
-
-    # Load Whisper model
-    model = WhisperModel(model_size, device=device, compute_type="float16")
-
-    # Perform transcription
-    segments, info = model.transcribe(str(audio_file_path), beam_size=5)
-
-    logger.info(f"Detected language '{info.language}' with probability {info.language_probability:.2f}")
-
-    # Build the transcription text
-    text = ""
-    for segment in segments:
-        logger.info(f"[{segment.start:.2f}s -> {segment.end:.2f}s] {segment.text}")
-        text += segment.text + " "
-
-    # Save the transcription to a file
-    transcripted_file_name = sanitize_filename(f"{audio_file_path.stem}_transcribed.txt")
-    transcripted_file_path = output_dir / transcripted_file_name
-    transcripted_file_path.write_text(text.strip(), encoding="utf-8")
-    logger.info(f"Transcription saved to {transcripted_file_path}")
-
-    return transcripted_file_path
-
-def cleanup(audio_file_path: Path) -> None:
+def transcribe_audio(audio_path: Path, output_dir: Path, model_name: str, language: Optional[str] = None) -> Path:
     """
-    Remove the temporary audio file after transcription is done.
-
-    :param audio_file_path: Path to the audio file to be deleted
+    Transcribes an audio file using whisper-cli.
+    
+    Args:
+        audio_path: Path to the audio file
+        output_dir: Output directory
+        model_name: Model name
+        language: Language code (optional). If None, language will be automatically detected.
+        
+    Returns:
+        Path to the transcribed file
     """
-    if audio_file_path.exists():
-        audio_file_path.unlink()
-        logger.info(f"Removed temporary audio file: {audio_file_path}")
+    # Check prerequisites
+    if not check_whisper_cli():
+        raise RuntimeError("whisper-cli not available")
+    
+    model_path = check_model(model_name)
+    
+    # Prepare output paths
+    base_filename = audio_path.stem
+    transcript_path = output_dir / f"{base_filename}_transcription.txt"
+    
+    # Convert all paths to absolute paths
+    audio_path_abs = audio_path.absolute()
+    model_path_abs = model_path.absolute()
+    
+    # Build the command
+    command = [
+        str(WHISPER_CLI_PATH),
+        "-m", str(model_path_abs),
+        "-f", str(audio_path_abs),
+        "-otxt",
+        "-of", str(output_dir.absolute() / base_filename)  # Specify output path
+    ]
+    
+    if language:
+        command.extend(["-l", language])
+        logger.info(f"Using specified language: {language}")
+    else:
+        logger.info("No language specified, automatic detection will be used")
+    
+    logger.info(f"Executing command: {' '.join(command)}")
+    
+    try:
+        # Execute whisper-cli
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        
+        # The output file should now be directly in the output directory
+        output_filename = f"{base_filename}.txt"
+        generated_path = output_dir.absolute() / output_filename
+        
+        if generated_path.exists():
+            # Rename with _transcription suffix
+            os.rename(str(generated_path), str(transcript_path))
+        else:
+            # Create from stdout if the file doesn't exist
+            logger.warning(f"Output file {generated_path} not found, using stdout")
+            transcript_path.write_text(result.stdout)
+        
+        # Extract detected language, if available in the output
+        detected_lang = None
+        for line in result.stdout.splitlines():
+            if "Detected language" in line:
+                detected_lang = line.split(":")[-1].strip()
+                break
+        
+        if not language and detected_lang:
+            logger.info(f"Automatically detected language: {detected_lang}")
+        
+        logger.info(f"Transcription completed: {transcript_path}")
+        return transcript_path
+        
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Error during transcription: {e}")
+        logger.error(f"Error output: {e.stderr}")
+        raise RuntimeError(f"Transcription error: {e}")
 
-def main(input_url: str, output_dir: str, model_size: str, sleep_interval: int) -> None:
+def main(input_url: str, output_dir: str, model_name: str, language: Optional[str] = None, keep_audio: bool = False) -> None:
     """
-    Main function to download, transcribe, and clean up audio files from a YouTube video or playlist.
-
-    :param input_url: The URL of the YouTube video or playlist
-    :param output_dir: Directory where output files will be saved
-    :param model_size: Whisper model size to use for transcription
-    :param sleep_interval: Time interval (in seconds) to sleep between each download
+    Main function of the script.
+    
+    Args:
+        input_url: YouTube URL
+        output_dir: Output directory
+        model_name: Model name
+        language: Language code (optional)
+        keep_audio: Keep audio files after transcription
     """
     output_path = Path(output_dir)
-    try:
-        # Download the audio files
-        audio_files, failed_urls = download_audio(input_url, output_path, sleep_interval)
+    output_path.mkdir(exist_ok=True, parents=True)
 
-        # Transcribe each audio file and clean up after transcription
-        for audio_file_path in audio_files:
-            try:
-                transcribe_audio(audio_file_path, output_path, model_size)
-            finally:
-                cleanup(audio_file_path)
-
-        # Log the URLs of videos that could not be downloaded
-        if failed_urls:
-            logger.warning("The following videos could not be downloaded:")
-            for url in failed_urls:
-                logger.warning(url)
-
-    except Exception as e:
-        logger.error(f"An error occurred: {e}")
-    finally:
-        logger.info("All files processed.")
+    logger.info(f"Downloading audio from: {input_url}")
+    audio_files, failed_urls = download_audio(input_url, output_path)
+    
+    if not audio_files:
+        logger.error("No audio files downloaded")
+        return
+    
+    if failed_urls:
+        logger.warning(f"Failed URLs: {', '.join(failed_urls)}")
+    
+    for audio_file in audio_files:
+        try:
+            transcript_path = transcribe_audio(audio_file, output_path, model_name, language)
+            logger.info(f"Transcription successful: {transcript_path}")
+        except Exception as e:
+            logger.error(f"Transcription failed for {audio_file}: {e}")
+        finally:
+            if not keep_audio and audio_file.exists():
+                logger.info(f"Deleting audio file: {audio_file}")
+                audio_file.unlink()
 
 if __name__ == '__main__':
-    # Command-line argument parsing
-    parser = argparse.ArgumentParser(description="Download and transcribe audio from a YouTube video or playlist.")
-    parser.add_argument("url", help="YouTube video or playlist URL")
-    parser.add_argument("-o", "--output", default="output", help="Output directory for transcription")
-    parser.add_argument("-m", "--model", default="large-v3", help="Whisper model size to use")
-    parser.add_argument("-s", "--sleep-interval", type=int, default=1, help="Sleep interval between downloads (in seconds)")
+    parser = argparse.ArgumentParser(description="YouTube transcription with whisper-cli")
+    parser.add_argument("url", help="YouTube URL")
+    parser.add_argument("-o", "--output", default="output", help="Output directory")
+    parser.add_argument("-m", "--model", default="large-v3-turbo", help="Model to use (large-v3-turbo, base, etc.)")
+    parser.add_argument("-l", "--lang", help="Target language (if not specified, language will be automatically detected)")
+    parser.add_argument("-k", "--keep-audio", action="store_true", help="Keep audio files after transcription")
+    
     args = parser.parse_args()
-
-    # Run the main function with parsed arguments
-    main(args.url, args.output, args.model, args.sleep_interval)
+    
+    main(args.url, args.output, args.model, args.lang, args.keep_audio)

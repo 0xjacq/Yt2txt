@@ -5,3 +5,11 @@ dist/
 yt2txt.spec
 venv/
 .bashrc
+mon_env
+.cursor/
+__pycache__/
+whisper.cpp/
+.cursorignore
+*.txt
+*.wav
+pytorchtest.py
