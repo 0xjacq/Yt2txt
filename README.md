@@ -1,129 +1,110 @@
 # Yt2txt
 
-## Description
+`yt2txt` turns YouTube videos or local `.wav` files into plain-text transcripts.
+For YouTube inputs it now prefers original-language text tracks before running
+local ASR:
 
-This project allows you to download YouTube videos, extract audio, and transcribe the audio files into text using the Faster Whisper library.
+1. creator-provided subtitles
+2. YouTube automatic captions
+3. local `mlx-qwen3-asr` fallback
 
-## Installation
+The emitted transcript contract stays the same for downstream callers:
 
-### 1. Prerequisites
+- per-video `*_transcription.txt`
+- latest transcript copied to `output.txt`
 
-- **Python 3.8 or newer** must be installed. [Download Python](https://www.python.org/downloads/).
-- A GPU compatible with CUDA (e.g., NVIDIA RTX 4090) is recommended for better performance on Windows/Linux.
-- macOS users with Apple Silicon (M1/M2/M4) can use the CPU version optimized for Metal Performance Shaders (MPS).
+## Requirements
 
-### 2. Set Up a Virtual Environment
+- Python 3.10+
+- `ffmpeg`
+- `yt-dlp`
+- `mlx-qwen3-asr`
 
-Create and activate a virtual environment:
+Install dependencies:
 
-#### On Windows
-```bash
-python -m venv .venv
-.\.venv\Scripts\Activate
-```
-
-#### On macOS/Linux
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-```
-
-### 3. Install Dependencies
-
-Install the required libraries for your project:
-
-## 📥 Installation
-```bash
 pip install -r requirements.txt
 ```
 
-And install ffprobe + ffmpeg
+## CLI
 
-### 4. Install PyTorch
-
-#### On Windows/Linux with NVIDIA GPU (CUDA)
-Install PyTorch with CUDA support. Replace `cu118` with your specific CUDA version if necessary.
+Basic usage:
 
 ```bash
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+python yt2txt.py "https://www.youtube.com/watch?v=VIDEO_ID" --output output
 ```
 
-#### On macOS with Apple Silicon (MPS)
-Install the MPS-optimized version of PyTorch:
+Caption-first behavior is the default:
 
 ```bash
-pip install torch torchvision torchaudio
+python yt2txt.py "https://www.youtube.com/watch?v=VIDEO_ID" \
+  --output output \
+  --transcript-source prefer-captions
 ```
 
-#### For CPU-only
-For systems without a GPU:
+Available source modes:
+
+- `prefer-captions`
+  - default
+  - manual subtitles, then automatic captions, then ASR
+- `captions-only`
+  - fail if no usable original/default-language caption track exists
+- `asr-only`
+  - skip captions and always run the local ASR pipeline
+
+Preserve human-readable caption markers when using caption tracks:
 
 ```bash
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+python yt2txt.py "https://www.youtube.com/watch?v=VIDEO_ID" \
+  --output output \
+  --markers
 ```
 
-### 5. Verify Installation
+Useful options:
 
-Run the following script to ensure PyTorch is configured correctly:
+- `--lang`
+  - preferred original-language caption key or ASR language override
+- `--draft-model`
+  - speculative decoding draft model for `mlx-qwen3-asr`
+- `--keep-audio`
+  - keep downloaded `.wav` files after ASR
+- `--max-videos`
+  - limit playlist/channel processing
+
+## Local Audio
+
+Single files and directories of `.wav` inputs remain ASR-only:
 
 ```bash
-python -c "import torch; print(torch.cuda.is_available()); print(torch.backends.mps.is_available()); print(torch.__version__)"
+python yt2txt.py /path/to/audio.wav --output output
+python yt2txt.py /path/to/wavs --output output
 ```
 
-- On Windows/Linux, `torch.cuda.is_available()` should return `True`.
-- On macOS with MPS, `torch.backends.mps.is_available()` should return `True`.
+`captions-only` is rejected for local audio inputs.
 
----
+## Python API
 
-## Usage
+The existing `main(...)` entry point remains available and now accepts two extra
+optional parameters:
 
-## 🚀 Usage
 ```python
-from yt2txt import YoutubeTranscript
+from yt2txt import main
 
-# Example of extraction
-transcript = YoutubeTranscript('https://youtu.be/VIDEO_ID').get_transcript()
+paths = main(
+    "https://www.youtube.com/watch?v=VIDEO_ID",
+    "output",
+    "Qwen/Qwen3-ASR-0.6B",
+    transcript_source="prefer-captions",
+    markers=False,
+)
 ```
 
-Run the project with the following command:
+## Notes
 
-```bash
-python your_script.py --url "https://youtube.com/..." -o output -m large-v3
-```
-
-- `--url`: The URL of the YouTube video or playlist.
-- `-o`: The output directory for the transcribed files.
-- `-m`: Whisper model size to use (e.g., `large-v3`).
-
----
-
-## Features
-
-## 🌟 Features
-- Subtitle extraction
-- Export in TXT/JSON format
-- Automatic language detection
-
----
-
-## Additional Notes
-
-### Installing CUDA for Windows/Linux with GPU
-If using CUDA on an NVIDIA GPU, make sure to:
-- Install and update the NVIDIA drivers.
-- Optionally install the CUDA Toolkit. [Download from NVIDIA CUDA Toolkit](https://developer.nvidia.com/cuda-downloads).
-
-### Optimization for macOS
-PyTorch leverages MPS (Metal Performance Shaders) to accelerate computations on Apple Silicon. No additional configuration is required.
-
----
-
-## Development and Contributions
-
-If you'd like to contribute, ensure you test the project on multiple platforms and configurations (Windows, macOS, GPU, CPU).
-
----
-
-## Authors
-
-Project developed by [Your Name/Team].
+- Caption downloads are normalized into plain transcript text.
+- VTT timing, cue numbering, and markup are always removed.
+- By default, caption artifacts like `>>` and `[music]` are removed.
+- `--markers` preserves those human-readable cues while still removing VTT
+  structure.
